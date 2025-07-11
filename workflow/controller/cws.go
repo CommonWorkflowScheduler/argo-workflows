@@ -64,43 +64,49 @@ type task struct {
 	WorkDir         string     `json:"workDir"`
 }
 
-// TODO: localhost:8081 only works if the controller runs
-// outside the cluster and we enable port forwarding for the cws
-// if the controller runs as a pod in the cluster we would use
-// "http://workflow-scheduler" as the url. Ideally there is one
-// solution for both cases
-
-// TODO: close response bodies if necessary
+const (
+	strategyKey = "cwsSchedulerStrategy"
+	nameKey     = "cwsSchedulerName"
+	podNameKey  = "cwsSchedulerPodName"
+	podPortKey  = "cwsSchedulerPort"
+	urlKey      = "cwsSchedulerUrl"
+)
 
 var registeredTasks = 0
 var tasksInBatch = 0
 
 func (woc *wfOperationCtx) cwsInit() bool {
-	_, ok := woc.globalParams["cwsSchedulerUrl"]
+	schedulerStrategy, ok := woc.globalParams[strategyKey]
 	if !ok {
-		schedulerName, ok := woc.globalParams["cwsSchedulerName"]
-		if !ok {
-			schedulerName = "workflow-scheduler"
-			woc.globalParams["cwsSchedulerName"] = schedulerName
-		}
-		schedulerPodName, ok := woc.globalParams["cwsSchedulerPodName"]
+		schedulerStrategy = "fifo-fair"
+		woc.globalParams[strategyKey] = schedulerStrategy
+	}
+	schedulerName, ok := woc.globalParams[nameKey]
+	if !ok {
+		schedulerName = "workflow-scheduler"
+		woc.globalParams[nameKey] = schedulerName
+	}
+
+	_, ok = woc.globalParams[urlKey]
+	if !ok {
+		schedulerPodName, ok := woc.globalParams[podNameKey]
 		if !ok {
 			schedulerPodName = "workflow-scheduler"
-			woc.globalParams["cwsSchedulerPodName"] = schedulerPodName
 		}
 		pods := woc.controller.kubeclientset.CoreV1().Pods(woc.wf.Namespace)
 		pod, err := pods.Get(context.Background(), schedulerPodName, metav1.GetOptions{})
 		if err != nil {
 			woc.log.Error("cws: could not register workflow and submit dag")
+			return false
 		}
-		schedulerPort, ok := woc.globalParams["cwsSchedulerPort"]
+		schedulerPort, ok := woc.globalParams[podPortKey]
 		if !ok {
 			schedulerPort = "8080"
 		}
 		podIp := pod.Status.PodIP
 		schedulerUrl := "http://" + podIp + ":" + schedulerPort
 		woc.log.Info("cws: scheduler at " + schedulerUrl)
-		woc.globalParams["cwsSchedulerUrl"] = schedulerUrl
+		woc.globalParams[urlKey] = schedulerUrl
 	}
 
 	if !woc.execWf.Status.RegisteredWithCWS {
@@ -118,8 +124,7 @@ func (woc *wfOperationCtx) cwsInit() bool {
 }
 
 func (woc *wfOperationCtx) cwsExecutionName() string {
-	// woc.execWf.ObjectMeta.Name
-	return "friedrich"
+	return woc.execWf.ObjectMeta.Name
 }
 
 func (woc *wfOperationCtx) cwsRegisterWF() bool {
@@ -128,7 +133,7 @@ func (woc *wfOperationCtx) cwsRegisterWF() bool {
 		Dns:          "",
 		TraceEnabled: true,
 		Namespace:    "argo",
-		Strategy:     "fifo-fair", // TODO: parameterize
+		Strategy:     woc.globalParams[strategyKey],
 	}
 	jsonBytes, err := json.Marshal(body)
 	if err != nil {
@@ -137,7 +142,7 @@ func (woc *wfOperationCtx) cwsRegisterWF() bool {
 	}
 	jsonString := string(jsonBytes)
 	woc.log.Info("cws: " + jsonString)
-	url := woc.globalParams["cwsSchedulerUrl"] + "/v1/scheduler/" + woc.cwsExecutionName()
+	url := woc.globalParams[urlKey] + "/v1/scheduler/" + woc.cwsExecutionName()
 	resp, err := http.Post(url, "application/json", strings.NewReader(jsonString))
 	if err != nil {
 		woc.log.Error("cws: " + err.Error())
@@ -154,7 +159,7 @@ func (woc *wfOperationCtx) cwsRegisterWF() bool {
 func (woc *wfOperationCtx) cwsDeleteWF() bool {
 	woc.log.Info("cws: deleting workflow")
 	client := &http.Client{}
-	url := woc.globalParams["cwsSchedulerUrl"] + "/v1/scheduler/" + woc.cwsExecutionName()
+	url := woc.globalParams[urlKey] + "/v1/scheduler/" + woc.cwsExecutionName()
 	req, err := http.NewRequest("DELETE", url, nil)
 	if err != nil {
 		woc.log.Error("cws: " + err.Error())
@@ -192,7 +197,6 @@ func (woc *wfOperationCtx) cwsSubmitDAG() bool {
 	var entrypointDag *v1alpha1.DAGTemplate
 
 	for _, template := range woc.wf.Spec.Templates {
-		template.SchedulerName = woc.globalParams["cwsSchedulerName"] + "-" + woc.cwsExecutionName()
 		templType := template.GetType()
 		switch templType {
 		case v1alpha1.TemplateTypeDAG:
@@ -271,7 +275,7 @@ func (woc *wfOperationCtx) cwsSubmitDAG() bool {
 	}
 	jsonString := string(jsonBytes)
 	woc.log.Info("cws: " + jsonString)
-	url := woc.globalParams["cwsSchedulerUrl"] + "/v1/scheduler/" + woc.cwsExecutionName() + "/DAG/vertices"
+	url := woc.globalParams[urlKey] + "/v1/scheduler/" + woc.cwsExecutionName() + "/DAG/vertices"
 	resp, err := http.Post(url, "application/json", strings.NewReader(jsonString))
 	if err != nil {
 		woc.log.Error("cws: " + err.Error())
@@ -291,7 +295,7 @@ func (woc *wfOperationCtx) cwsSubmitDAG() bool {
 	}
 	jsonString = string(jsonBytes)
 	woc.log.Info("cws: " + jsonString)
-	url = woc.globalParams["cwsSchedulerUrl"] + "/v1/scheduler/" + woc.cwsExecutionName() + "/DAG/edges"
+	url = woc.globalParams[urlKey] + "/v1/scheduler/" + woc.cwsExecutionName() + "/DAG/edges"
 	resp, err = http.Post(url, "application/json", strings.NewReader(jsonString))
 	if err != nil {
 		woc.log.Error("cws: " + err.Error())
@@ -312,7 +316,7 @@ func (woc *wfOperationCtx) cwsSubmitDAG() bool {
 func (woc *wfOperationCtx) cwsStartBatch() bool {
 	woc.log.Info("cws: starting batch")
 	client := &http.Client{}
-	url := woc.globalParams["cwsSchedulerUrl"] + "/v1/scheduler/" + woc.cwsExecutionName() + "/startBatch"
+	url := woc.globalParams[urlKey] + "/v1/scheduler/" + woc.cwsExecutionName() + "/startBatch"
 	req, err := http.NewRequest("PUT", url, nil)
 	resp, err := client.Do(req)
 	if err != nil {
@@ -331,7 +335,7 @@ func (woc *wfOperationCtx) cwsStartBatch() bool {
 func (woc *wfOperationCtx) cwsEndBatch() bool {
 	woc.log.Info("cws: ending batch")
 	client := &http.Client{}
-	url := woc.globalParams["cwsSchedulerUrl"] + "/v1/scheduler/" + woc.cwsExecutionName() + "/endBatch"
+	url := woc.globalParams[urlKey] + "/v1/scheduler/" + woc.cwsExecutionName() + "/endBatch"
 	req, err := http.NewRequest("PUT", url, strings.NewReader(strconv.Itoa(tasksInBatch)))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
@@ -347,16 +351,9 @@ func (woc *wfOperationCtx) cwsEndBatch() bool {
 	return true
 }
 
-func (woc *wfOperationCtx) cwsAddMetadata(node *v1alpha1.NodeStatus, meta *v1alpha1.Metadata) {
-	meta.Labels["app"] = "argo"
-	meta.Labels["processName"] = node.TemplateName
-	meta.Labels["runName"] = node.Name
-	meta.Labels["taskName"] = node.DisplayName
-}
-
 func (woc *wfOperationCtx) cwsRegisterTask(node *v1alpha1.NodeStatus) bool {
 	woc.log.Info("cws: registering task")
-	// TODO: understand task fields
+	// TODO: params and input task fields
 	body := task{
 		Task:            node.TemplateName,
 		Name:            node.DisplayName,
@@ -374,7 +371,7 @@ func (woc *wfOperationCtx) cwsRegisterTask(node *v1alpha1.NodeStatus) bool {
 	}
 	jsonString := string(jsonBytes)
 	woc.log.Info("cws: " + jsonString)
-	url := woc.globalParams["cwsSchedulerUrl"] + "/v1/scheduler/" + woc.cwsExecutionName() + "/task/"
+	url := woc.globalParams[urlKey] + "/v1/scheduler/" + woc.cwsExecutionName() + "/task/"
 	resp, err := http.Post(url+strconv.Itoa(registeredTasks), "application/json", strings.NewReader(jsonString))
 	if err != nil {
 		woc.log.Error("cws: " + err.Error())

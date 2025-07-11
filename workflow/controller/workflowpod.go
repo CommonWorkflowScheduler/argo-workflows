@@ -196,6 +196,10 @@ func (woc *wfOperationCtx) createWorkflowPod(ctx context.Context, nodeName strin
 			Labels: map[string]string{
 				common.LabelKeyWorkflow:  woc.wf.Name, // Allows filtering by pods related to specific workflow
 				common.LabelKeyCompleted: "false",     // Allows filtering by incomplete workflow pods
+				"app":                    "argo",
+				"processName":            tmpl.Name,
+				"runName":                nodeName,
+				"taskName":               nodeName,
 			},
 			Annotations: map[string]string{
 				common.AnnotationKeyNodeName: nodeName,
@@ -210,7 +214,7 @@ func (woc *wfOperationCtx) createWorkflowPod(ctx context.Context, nodeName strin
 			Volumes:               woc.createVolumes(tmpl),
 			ActiveDeadlineSeconds: activeDeadlineSeconds,
 			ImagePullSecrets:      woc.execWf.Spec.ImagePullSecrets,
-			SchedulerName:         "workflow-scheduler" + woc.cwsExecutionName(),
+			SchedulerName:         woc.globalParams[nameKey] + "-" + woc.cwsExecutionName(),
 		},
 	}
 
