@@ -124,11 +124,11 @@ func (woc *wfOperationCtx) cwsInit() bool {
 }
 
 func (woc *wfOperationCtx) cwsExecutionName() string {
-	return woc.execWf.ObjectMeta.Name
+	return "argo-" + string(woc.execWf.UID)
 }
 
 func (woc *wfOperationCtx) cwsRegisterWF() bool {
-	woc.log.Info("cws: registering workflow")
+	woc.log.Info("cws: registering workflow (execution: " + woc.cwsExecutionName() + ")")
 	body := registerWorkflowRequestBody{
 		Dns:          "",
 		TraceEnabled: true,
