@@ -75,7 +75,7 @@ const (
 var registeredTasks = 0
 var tasksInBatch = 0
 
-func (woc *wfOperationCtx) cwsInit() bool {
+func (woc *wfOperationCtx) cwsInit(ctx context.Context) bool {
 	schedulerStrategy, ok := woc.globalParams[strategyKey]
 	if !ok {
 		schedulerStrategy = "fifo-fair"
@@ -96,7 +96,7 @@ func (woc *wfOperationCtx) cwsInit() bool {
 		pods := woc.controller.kubeclientset.CoreV1().Pods(woc.wf.Namespace)
 		pod, err := pods.Get(context.Background(), schedulerPodName, metav1.GetOptions{})
 		if err != nil {
-			woc.log.Error("cws: could not register workflow and submit dag")
+			woc.log.Error(ctx, "cws: could not register workflow and submit dag")
 			return false
 		}
 		schedulerPort, ok := woc.globalParams[podPortKey]
@@ -105,17 +105,17 @@ func (woc *wfOperationCtx) cwsInit() bool {
 		}
 		podIp := pod.Status.PodIP
 		schedulerUrl := "http://" + podIp + ":" + schedulerPort
-		woc.log.Info("cws: scheduler at " + schedulerUrl)
+		woc.log.Info(ctx, "cws: scheduler at "+schedulerUrl)
 		woc.globalParams[urlKey] = schedulerUrl
 	}
 
 	if !woc.execWf.Status.RegisteredWithCWS {
-		if !woc.cwsRegisterWF() {
-			woc.log.Error("cws: Unable to register Workflow to CWS Scheduler")
+		if !woc.cwsRegisterWF(ctx) {
+			woc.log.Error(ctx, "cws: Unable to register Workflow to CWS Scheduler")
 			return false
 		}
-		if !woc.cwsSubmitDAG() {
-			woc.log.Error("cws: Unable to submit Workflow DAG to CWS Scheduler")
+		if !woc.cwsSubmitDAG(ctx) {
+			woc.log.Error(ctx, "cws: Unable to submit Workflow DAG to CWS Scheduler")
 			return false
 		}
 		woc.wf.Status.RegisteredWithCWS = true
@@ -127,8 +127,8 @@ func (woc *wfOperationCtx) cwsExecutionName() string {
 	return "argo-" + string(woc.execWf.UID)
 }
 
-func (woc *wfOperationCtx) cwsRegisterWF() bool {
-	woc.log.Info("cws: registering workflow (execution: " + woc.cwsExecutionName() + ")")
+func (woc *wfOperationCtx) cwsRegisterWF(ctx context.Context) bool {
+	woc.log.Info(ctx, "cws: registering workflow (execution: "+woc.cwsExecutionName()+")")
 	body := registerWorkflowRequestBody{
 		Dns:          "",
 		TraceEnabled: true,
@@ -137,44 +137,44 @@ func (woc *wfOperationCtx) cwsRegisterWF() bool {
 	}
 	jsonBytes, err := json.Marshal(body)
 	if err != nil {
-		woc.log.Error("cws: " + err.Error())
+		woc.log.Error(ctx, "cws: "+err.Error())
 		return false
 	}
 	jsonString := string(jsonBytes)
-	woc.log.Info("cws: " + jsonString)
+	woc.log.Info(ctx, "cws: "+jsonString)
 	url := woc.globalParams[urlKey] + "/v1/scheduler/" + woc.cwsExecutionName()
 	resp, err := http.Post(url, "application/json", strings.NewReader(jsonString))
 	if err != nil {
-		woc.log.Error("cws: " + err.Error())
+		woc.log.Error(ctx, "cws: "+err.Error())
 		return false
 	}
 	if resp.StatusCode != 200 {
-		woc.log.Error("cws: " + resp.Status)
+		woc.log.Error(ctx, "cws: "+resp.Status)
 		return false
 	}
-	woc.log.Info("cws: successfully registered workflow")
+	woc.log.Info(ctx, "cws: successfully registered workflow")
 	return true
 }
 
-func (woc *wfOperationCtx) cwsDeleteWF() bool {
-	woc.log.Info("cws: deleting workflow")
+func (woc *wfOperationCtx) cwsDeleteWF(ctx context.Context) bool {
+	woc.log.Info(ctx, "cws: deleting workflow")
 	client := &http.Client{}
 	url := woc.globalParams[urlKey] + "/v1/scheduler/" + woc.cwsExecutionName()
 	req, err := http.NewRequest("DELETE", url, nil)
 	if err != nil {
-		woc.log.Error("cws: " + err.Error())
+		woc.log.Error(ctx, "cws: "+err.Error())
 		return false
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		woc.log.Error("cws: " + err.Error())
+		woc.log.Error(ctx, "cws: "+err.Error())
 		return false
 	}
 	if resp.StatusCode != 200 {
-		woc.log.Error("cws: " + resp.Status)
+		woc.log.Error(ctx, "cws: "+resp.Status)
 		return false
 	}
-	woc.log.Info("cws: successfully deleted workflow")
+	woc.log.Info(ctx, "cws: successfully deleted workflow")
 	return true
 }
 
@@ -184,8 +184,8 @@ func (woc *wfOperationCtx) cwsDeleteWF() bool {
 //     i.e. no template invocations
 //   - a single DAG template as the entry point that only calls template definitions
 //     i.e. it calls no template invocations including itself
-func (woc *wfOperationCtx) cwsSubmitDAG() bool {
-	woc.log.Info("cws: submitting DAG")
+func (woc *wfOperationCtx) cwsSubmitDAG(ctx context.Context) bool {
+	woc.log.Info(ctx, "cws: submitting DAG")
 	entrypointUid := 0
 	vertices := []vertex{{
 		Label: "Entrypoint",
@@ -201,12 +201,12 @@ func (woc *wfOperationCtx) cwsSubmitDAG() bool {
 		switch templType {
 		case v1alpha1.TemplateTypeDAG:
 			if template.Name != woc.wf.Spec.Entrypoint {
-				woc.log.Error("cws: DAG templates that are not the entrypoint are not supported with CWS")
+				woc.log.Error(ctx, "cws: DAG templates that are not the entrypoint are not supported with CWS")
 				return false
 			}
 			entrypointDag = template.DAG
 		case v1alpha1.TemplateTypeSteps:
-			woc.log.Error("cws: Steps templates are not supported with CWS")
+			woc.log.Error(ctx, "cws: Steps templates are not supported with CWS")
 			return false
 		default:
 			vertexUid := len(vertices)
@@ -230,7 +230,7 @@ func (woc *wfOperationCtx) cwsSubmitDAG() bool {
 
 	if entrypointDag != nil {
 		if len(edges) > 0 {
-			woc.log.Error("cws: Did not expect second entrypoint when using DAG template as an entrypoint")
+			woc.log.Error(ctx, "cws: Did not expect second entrypoint when using DAG template as an entrypoint")
 			return false
 		}
 		vertexUids := make(map[string]int)
@@ -243,18 +243,18 @@ func (woc *wfOperationCtx) cwsSubmitDAG() bool {
 
 		for _, task := range entrypointDag.Tasks {
 			if task.Inline != nil {
-				woc.log.Error("cws: Inline templates are not supported with CWS")
+				woc.log.Error(ctx, "cws: Inline templates are not supported with CWS")
 				return false
 			}
 			templateUid := vertexUids[task.Template]
 			if templateUid == 0 {
-				woc.log.Error("cws: Expect DAG tasks to have valid template name")
+				woc.log.Error(ctx, "cws: Expect DAG tasks to have valid template name")
 				return false
 			}
 			for _, dependency := range task.Dependencies {
 				dependencyUid := vertexUids[dependency]
 				if dependencyUid == 0 {
-					woc.log.Error("cws: Expect DAG tasks to have non-invoker dependencies with valid names")
+					woc.log.Error(ctx, "cws: Expect DAG tasks to have non-invoker dependencies with valid names")
 					return false
 				}
 				edges = append(edges, edge{
@@ -270,89 +270,89 @@ func (woc *wfOperationCtx) cwsSubmitDAG() bool {
 
 	jsonBytes, err := json.Marshal(vertices)
 	if err != nil {
-		woc.log.Error("cws: " + err.Error())
+		woc.log.Error(ctx, "cws: "+err.Error())
 		return false
 	}
 	jsonString := string(jsonBytes)
-	woc.log.Info("cws: " + jsonString)
+	woc.log.Info(ctx, "cws: "+jsonString)
 	url := woc.globalParams[urlKey] + "/v1/scheduler/" + woc.cwsExecutionName() + "/DAG/vertices"
 	resp, err := http.Post(url, "application/json", strings.NewReader(jsonString))
 	if err != nil {
-		woc.log.Error("cws: " + err.Error())
+		woc.log.Error(ctx, "cws: "+err.Error())
 		return false
 	}
 	response_body, err := io.ReadAll(resp.Body)
-	woc.log.Info("cws: " + string(response_body))
+	woc.log.Info(ctx, "cws: "+string(response_body))
 	if resp.StatusCode != 200 {
-		woc.log.Error("cws: " + resp.Status)
+		woc.log.Error(ctx, "cws: "+resp.Status)
 		return false
 	}
 
 	jsonBytes, err = json.Marshal(edges)
 	if err != nil {
-		woc.log.Error("cws: " + err.Error())
+		woc.log.Error(ctx, "cws: "+err.Error())
 		return false
 	}
 	jsonString = string(jsonBytes)
-	woc.log.Info("cws: " + jsonString)
+	woc.log.Info(ctx, "cws: "+jsonString)
 	url = woc.globalParams[urlKey] + "/v1/scheduler/" + woc.cwsExecutionName() + "/DAG/edges"
 	resp, err = http.Post(url, "application/json", strings.NewReader(jsonString))
 	if err != nil {
-		woc.log.Error("cws: " + err.Error())
+		woc.log.Error(ctx, "cws: "+err.Error())
 		return false
 	}
 	response_body, err = io.ReadAll(resp.Body)
-	woc.log.Info("cws: " + string(response_body))
+	woc.log.Info(ctx, "cws: "+string(response_body))
 	if resp.StatusCode != 200 {
-		woc.log.Error("cws: " + resp.Status)
+		woc.log.Error(ctx, "cws: "+resp.Status)
 		return false
 	}
 
-	woc.log.Info("cws: successfully submitted DAG")
+	woc.log.Info(ctx, "cws: successfully submitted DAG")
 	return true
 
 }
 
-func (woc *wfOperationCtx) cwsStartBatch() bool {
-	woc.log.Info("cws: starting batch")
+func (woc *wfOperationCtx) cwsStartBatch(ctx context.Context) bool {
+	woc.log.Info(ctx, "cws: starting batch")
 	client := &http.Client{}
 	url := woc.globalParams[urlKey] + "/v1/scheduler/" + woc.cwsExecutionName() + "/startBatch"
 	req, err := http.NewRequest("PUT", url, nil)
 	resp, err := client.Do(req)
 	if err != nil {
-		woc.log.Error("cws: " + err.Error())
+		woc.log.Error(ctx, "cws: "+err.Error())
 		return false
 	}
 	if resp.StatusCode != 200 {
-		woc.log.Error("cws: " + resp.Status)
+		woc.log.Error(ctx, "cws: "+resp.Status)
 		return false
 	}
-	woc.log.Info("cws: successfully started batch")
+	woc.log.Info(ctx, "cws: successfully started batch")
 	tasksInBatch = 0
 	return true
 }
 
-func (woc *wfOperationCtx) cwsEndBatch() bool {
-	woc.log.Info("cws: ending batch")
+func (woc *wfOperationCtx) cwsEndBatch(ctx context.Context) bool {
+	woc.log.Info(ctx, "cws: ending batch")
 	client := &http.Client{}
 	url := woc.globalParams[urlKey] + "/v1/scheduler/" + woc.cwsExecutionName() + "/endBatch"
 	req, err := http.NewRequest("PUT", url, strings.NewReader(strconv.Itoa(tasksInBatch)))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		woc.log.Error("cws: " + err.Error())
+		woc.log.Error(ctx, "cws: "+err.Error())
 		return false
 	}
 	if resp.StatusCode != 200 {
-		woc.log.Error("cws: " + resp.Status)
+		woc.log.Error(ctx, "cws: "+resp.Status)
 		return false
 	}
-	woc.log.Info("cws: successfully ended batch")
+	woc.log.Info(ctx, "cws: successfully ended batch")
 	return true
 }
 
-func (woc *wfOperationCtx) cwsRegisterTask(node *v1alpha1.NodeStatus) bool {
-	woc.log.Info("cws: registering task")
+func (woc *wfOperationCtx) cwsRegisterTask(node *v1alpha1.NodeStatus, ctx context.Context) bool {
+	woc.log.Info(ctx, "cws: registering task")
 	// TODO: params and input task fields
 	body := task{
 		Task:            node.TemplateName,
@@ -366,22 +366,22 @@ func (woc *wfOperationCtx) cwsRegisterTask(node *v1alpha1.NodeStatus) bool {
 	}
 	jsonBytes, err := json.Marshal(body)
 	if err != nil {
-		woc.log.Error("cws: " + err.Error())
+		woc.log.Error(ctx, "cws: "+err.Error())
 		return false
 	}
 	jsonString := string(jsonBytes)
-	woc.log.Info("cws: " + jsonString)
+	woc.log.Info(ctx, "cws: "+jsonString)
 	url := woc.globalParams[urlKey] + "/v1/scheduler/" + woc.cwsExecutionName() + "/task/"
 	resp, err := http.Post(url+strconv.Itoa(registeredTasks), "application/json", strings.NewReader(jsonString))
 	if err != nil {
-		woc.log.Error("cws: " + err.Error())
+		woc.log.Error(ctx, "cws: "+err.Error())
 		return false
 	}
 	if resp.StatusCode != 200 {
-		woc.log.Error("cws: " + resp.Status)
+		woc.log.Error(ctx, "cws: "+resp.Status)
 		return false
 	}
 	registeredTasks++
-	woc.log.Info("cws: successfully registered task")
+	woc.log.Info(ctx, "cws: successfully registered task")
 	return true
 }
