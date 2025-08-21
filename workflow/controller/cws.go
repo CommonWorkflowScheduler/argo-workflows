@@ -356,20 +356,30 @@ func (woc *wfOperationCtx) cwsEndBatch(ctx context.Context) bool {
 	return true
 }
 
+func getTaskName(node *v1alpha1.NodeStatus) string {
+	s := node.DisplayName
+	i := strings.Index(s, "(")
+	if i != -1 {
+		return s[:i]
+	}
+	return s
+}
+
 func (woc *wfOperationCtx) cwsRegisterTask(node *v1alpha1.NodeStatus, ctx context.Context) bool {
 	woc.log.Info(ctx, "cws: registering task")
 	// TODO: params and input task fields
 	body := task{
-		Task:            node.TemplateName,
-		Name:            node.Name,
+		Task:            getTaskName(node),
+		Name:            node.DisplayName,
 		SchedulerParams: taskParams{},
 		Inputs:          taskInputs{}, // NOTE: only file inputs matter
-		RunName:         node.Name,
+		RunName:         node.ID,
 		Cpus:            0, // NOTE: never used by CWS scheduler
 		MemoryInBytes:   0, // NOTE: never used by CWS scheduler
 		WorkDir:         "/",
 	}
-	woc.log.Infof(ctx, "cws: template name: %s, name: %s, display name: %s, template.name: %s, id: %s", node.TemplateName, node.Name, node.DisplayName, node.GetTemplate().Name, node.ID)
+	woc.log.Infof(ctx, "cws: NODE template name: %s, name: %s, display name: %s, id: %s", node.TemplateName, node.Name, node.DisplayName, node.ID)
+	woc.log.Infof(ctx, "cws: BODY task: %s, name: %s, run name: %s", body.Task, body.Name, body.RunName)
 	jsonBytes, err := json.Marshal(body)
 	if err != nil {
 		woc.log.Error(ctx, "cws: json error - "+err.Error())
