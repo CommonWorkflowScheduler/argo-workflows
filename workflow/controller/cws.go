@@ -209,22 +209,6 @@ func (woc *wfOperationCtx) cwsSubmitDAG(ctx context.Context) bool {
 			woc.log.Error(ctx, "cws: Steps templates are not supported with CWS")
 			return false
 		default:
-			vertexUid := len(vertices)
-			template_vertex := vertex{
-				Label: template.Name,
-				Uid:   vertexUid,
-				Type:  "PROCESS",
-			}
-			vertices = append(vertices, template_vertex)
-			if template.Name == woc.wf.Spec.Entrypoint {
-				uid := len(edges)
-				edges = append(edges, edge{
-					Label: strconv.Itoa(uid),
-					Uid:   uid,
-					From:  entrypointUid,
-					To:    vertexUid,
-				})
-			}
 		}
 	}
 
@@ -235,10 +219,11 @@ func (woc *wfOperationCtx) cwsSubmitDAG(ctx context.Context) bool {
 		}
 		vertexUids := make(map[string]int)
 		for _, vertex := range vertices {
-			if vertex.Label != "PROCESS" {
+			if vertex.Type != "PROCESS" {
 				continue
 			}
 			vertexUids[vertex.Label] = vertex.Uid
+			woc.log.Errorf(ctx, "vertex %s -> %s", vertex.Label, vertex.Uid)
 		}
 
 		for _, task := range entrypointDag.Tasks {
@@ -246,22 +231,42 @@ func (woc *wfOperationCtx) cwsSubmitDAG(ctx context.Context) bool {
 				woc.log.Error(ctx, "cws: Inline templates are not supported with CWS")
 				return false
 			}
-			templateUid := vertexUids[task.Template]
-			if templateUid == 0 {
-				woc.log.Error(ctx, "cws: Expect DAG tasks to have valid template name")
+			vertexUid := len(vertices)
+			taskVertex := vertex{
+				Label: task.Name,
+				Uid:   vertexUid,
+				Type:  "PROCESS",
+			}
+			woc.log.Errorf(ctx, "cws: found vertex %s", task.Name)
+			vertices = append(vertices, taskVertex)
+			vertexUids[task.Name] = vertexUid
+		}
+
+		for _, task := range entrypointDag.Tasks {
+			taskUid := vertexUids[task.Name]
+			if taskUid == 0 {
+				woc.log.Errorf(ctx, "cws: Expect DAG tasks to have valid template name but found %s", task.Template)
 				return false
+			}
+			if len(task.Dependencies) == 0 {
+				edges = append(edges, edge{
+					Label: "", // TODO: resonable naming?
+					Uid:   len(edges),
+					From:  entrypointUid,
+					To:    taskUid,
+				})
 			}
 			for _, dependency := range task.Dependencies {
 				dependencyUid := vertexUids[dependency]
 				if dependencyUid == 0 {
-					woc.log.Error(ctx, "cws: Expect DAG tasks to have non-invoker dependencies with valid names")
+					woc.log.Errorf(ctx, "cws: Expect DAG tasks to have non-invoker dependencies with valid names but found %s", dependency)
 					return false
 				}
 				edges = append(edges, edge{
-					Label: "",
+					Label: "", // TODO: resonable naming?
 					Uid:   len(edges),
 					From:  dependencyUid,
-					To:    templateUid,
+					To:    taskUid,
 				})
 			}
 		}
@@ -356,7 +361,7 @@ func (woc *wfOperationCtx) cwsRegisterTask(node *v1alpha1.NodeStatus, ctx contex
 	// TODO: params and input task fields
 	body := task{
 		Task:            node.TemplateName,
-		Name:            node.DisplayName,
+		Name:            node.Name,
 		SchedulerParams: taskParams{},
 		Inputs:          taskInputs{}, // NOTE: only file inputs matter
 		RunName:         node.Name,
@@ -364,13 +369,14 @@ func (woc *wfOperationCtx) cwsRegisterTask(node *v1alpha1.NodeStatus, ctx contex
 		MemoryInBytes:   0, // NOTE: never used by CWS scheduler
 		WorkDir:         "/",
 	}
+	woc.log.Infof(ctx, "cws: template name: %s, name: %s, display name: %s, template.name: %s, id: %s", node.TemplateName, node.Name, node.DisplayName, node.GetTemplate().Name, node.ID)
 	jsonBytes, err := json.Marshal(body)
 	if err != nil {
-		woc.log.Error(ctx, "cws: "+err.Error())
+		woc.log.Error(ctx, "cws: json error - "+err.Error())
 		return false
 	}
 	jsonString := string(jsonBytes)
-	woc.log.Info(ctx, "cws: "+jsonString)
+	woc.log.Info(ctx, "cws: resulting string - "+jsonString)
 	url := woc.globalParams[urlKey] + "/v1/scheduler/" + woc.cwsExecutionName() + "/task/"
 	resp, err := http.Post(url+strconv.Itoa(registeredTasks), "application/json", strings.NewReader(jsonString))
 	if err != nil {
@@ -378,7 +384,7 @@ func (woc *wfOperationCtx) cwsRegisterTask(node *v1alpha1.NodeStatus, ctx contex
 		return false
 	}
 	if resp.StatusCode != 200 {
-		woc.log.Error(ctx, "cws: "+resp.Status)
+		woc.log.Error(ctx, "cws: response "+resp.Status)
 		return false
 	}
 	registeredTasks++
