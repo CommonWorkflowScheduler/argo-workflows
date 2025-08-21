@@ -3025,8 +3025,6 @@ func (woc *wfOperationCtx) executeContainer(ctx context.Context, nodeName string
 	}
 
 	woc.log.WithFields(logging.Fields{"nodeName": nodeName, "template": tmpl.Name}).Debug(ctx, "Executing node with container template")
-	woc.registerTask(node)
-	woc.log.Infof(ctx, "???: template name: %s, name: %s, display name: %s, template.name: %s, id: %s", node.TemplateName, node.Name, node.DisplayName, node.GetTemplate().Name, node.ID)
 	woc.cwsRegisterTask(node, ctx)
 
 	woc.log.Debugf(ctx, "Executing node %s with container template: %v\n", nodeName, tmpl.Name)
