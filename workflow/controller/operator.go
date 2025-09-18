@@ -3027,7 +3027,10 @@ func (woc *wfOperationCtx) executeContainer(ctx context.Context, nodeName string
 	woc.log.WithFields(logging.Fields{"nodeName": nodeName, "template": tmpl.Name}).Debug(ctx, "Executing node with container template")
 	woc.cwsRegisterTask(node, ctx)
 
-	woc.log.Debugf(ctx, "Executing node %s with container template: %v\n", nodeName, tmpl.Name)
+	woc.log.WithFields(logging.Fields{
+		"node":               nodeName,
+		"container template": tmpl.Name,
+	}).Debug(ctx, "Executing node")
 	_, err = woc.createWorkflowPod(ctx, nodeName, []apiv1.Container{*tmpl.Container}, tmpl, &createWorkflowPodOpts{
 		includeScriptOutput: includeScriptOutput,
 		onExitPod:           opts.onExitTemplate,

@@ -11,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/argoproj/argo-workflows/v3/pkg/apis/workflow/v1alpha1"
+	"github.com/argoproj/argo-workflows/v3/util/logging"
 )
 
 type registerWorkflowRequestBody struct {
@@ -223,7 +224,10 @@ func (woc *wfOperationCtx) cwsSubmitDAG(ctx context.Context) bool {
 				continue
 			}
 			vertexUids[vertex.Label] = vertex.Uid
-			woc.log.Errorf(ctx, "vertex %s -> %s", vertex.Label, vertex.Uid)
+			woc.log.WithFields(logging.Fields{
+				"label": vertex.Label,
+				"uid":   vertex.Uid,
+			}).Error(ctx, "vertex mapping")
 		}
 
 		for _, task := range entrypointDag.Tasks {
@@ -237,7 +241,7 @@ func (woc *wfOperationCtx) cwsSubmitDAG(ctx context.Context) bool {
 				Uid:   vertexUid,
 				Type:  "PROCESS",
 			}
-			woc.log.Errorf(ctx, "cws: found vertex %s", task.Name)
+			woc.log.WithField("vertex name", task.Name).Info(ctx, "cws: found vertex")
 			vertices = append(vertices, taskVertex)
 			vertexUids[task.Name] = vertexUid
 		}
@@ -245,7 +249,7 @@ func (woc *wfOperationCtx) cwsSubmitDAG(ctx context.Context) bool {
 		for _, task := range entrypointDag.Tasks {
 			taskUid := vertexUids[task.Name]
 			if taskUid == 0 {
-				woc.log.Errorf(ctx, "cws: Expect DAG tasks to have valid template name but found %s", task.Template)
+				woc.log.WithField("invalid template name", task.Template).Error(ctx, "cws: Expect DAG tasks to have valid template name")
 				return false
 			}
 			if len(task.Dependencies) == 0 {
@@ -259,7 +263,8 @@ func (woc *wfOperationCtx) cwsSubmitDAG(ctx context.Context) bool {
 			for _, dependency := range task.Dependencies {
 				dependencyUid := vertexUids[dependency]
 				if dependencyUid == 0 {
-					woc.log.Errorf(ctx, "cws: Expect DAG tasks to have non-invoker dependencies with valid names but found %s", dependency)
+					woc.log.WithField("invalid name", dependency).
+						Error(ctx, "cws: Expect DAG tasks to have non-invoker dependencies with valid names")
 					return false
 				}
 				edges = append(edges, edge{
@@ -378,8 +383,17 @@ func (woc *wfOperationCtx) cwsRegisterTask(node *v1alpha1.NodeStatus, ctx contex
 		MemoryInBytes:   0, // NOTE: never used by CWS scheduler
 		WorkDir:         "/",
 	}
-	woc.log.Infof(ctx, "cws: NODE template name: %s, name: %s, display name: %s, id: %s", node.TemplateName, node.Name, node.DisplayName, node.ID)
-	woc.log.Infof(ctx, "cws: BODY task: %s, name: %s, run name: %s", body.Task, body.Name, body.RunName)
+	woc.log.WithFields(logging.Fields{
+		"template name": node.TemplateName,
+		"name":          node.Name,
+		"display name":  node.DisplayName,
+		"id":            node.ID,
+	}).Info(ctx, "cws: NODE")
+	woc.log.WithFields(logging.Fields{
+		"task":     body.Task,
+		"name":     body.Name,
+		"run name": body.RunName,
+	}).Info(ctx, "cws: BODY")
 	jsonBytes, err := json.Marshal(body)
 	if err != nil {
 		woc.log.Error(ctx, "cws: json error - "+err.Error())
