@@ -12,6 +12,7 @@ import (
 
 	"github.com/argoproj/argo-workflows/v3/pkg/apis/workflow/v1alpha1"
 	"github.com/argoproj/argo-workflows/v3/util/logging"
+	"github.com/argoproj/argo-workflows/v3/workflow/util"
 )
 
 type registerWorkflowRequestBody struct {
@@ -378,7 +379,7 @@ func (woc *wfOperationCtx) cwsRegisterTask(node *v1alpha1.NodeStatus, ctx contex
 		Name:            node.DisplayName,
 		SchedulerParams: taskParams{},
 		Inputs:          taskInputs{}, // NOTE: only file inputs matter
-		RunName:         node.ID,
+		RunName:         util.GeneratePodName(woc.wf.Name, node.Name, node.TemplateName, node.ID, util.GetWorkflowPodNameVersion(woc.wf)),
 		Cpus:            0, // NOTE: never used by CWS scheduler
 		MemoryInBytes:   0, // NOTE: never used by CWS scheduler
 		WorkDir:         "/",
