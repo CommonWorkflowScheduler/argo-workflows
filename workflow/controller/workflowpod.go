@@ -198,8 +198,6 @@ func (woc *wfOperationCtx) createWorkflowPod(ctx context.Context, nodeName strin
 				common.LabelKeyCompleted: "false",     // Allows filtering by incomplete workflow pods
 				"app":                    "argo",
 				"processName":            tmpl.Name,
-				"runName":                nodeName,
-				"taskName":               nodeName,
 			},
 			Annotations: map[string]string{
 				common.AnnotationKeyNodeName: nodeName,

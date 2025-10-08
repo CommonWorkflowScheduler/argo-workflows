@@ -15,16 +15,36 @@ import (
 	"github.com/argoproj/argo-workflows/v3/workflow/util"
 )
 
-type registerWorkflowRequestBody struct {
-	//VolumeClaims []volumeClaims `json:"volumeClaims"`
-	//WorkDir string `json:"workDir"`
-	Dns          string `json:"dns"`
-	TraceEnabled bool   `json:"traceEnabled"`
-	Namespace    string `json:"namespace"`
-	//CostFunction string `json:"costFunction"`
+// type localClaim struct {
+// 	MountPath string `json:"mountPath"`
+// 	HostPath  string `json:"hostPath"`
+// }
+
+// type volumeClaim struct {
+// 	MountPath string `json:"mountPath"`
+// 	HostPath  string `json:"hostPath"`
+// 	SubPath   string `json:"subPath"`
+// }
+
+type cwsSchedulerConfig struct {
+	// VolumeClaims []volumeClaim `json:"volumeClaims"`
+	// LocalClaims               []localClaim      `json:"localClaims"`
+	// LocalWorkDir              string            `json:"localWorkDir"`
+	WorkDir string `json:"workDir"`
+	Dns     string `json:"dns"`
+	// CopyStrategy              string            `json:"copyStrategy"`
+	LocationAware bool   `json:"locationAware"`
+	TraceEnabled  bool   `json:"traceEnabled"`
+	Namespace     string `json:"namespace"`
+	// CostFunction              string            `json:"costFunction"`
 	Strategy string `json:"strategy"`
-	//MaxCopyTaskPerNode int `json:"maxCopyTaskPerNode"`
-	//MaxWaitingCopyTaskPerNode int `json:"maxWaitingCopyTaskPerNode"`
+	// MaxCopyTaskPerNode        int               `json:"maxCopyTaskPerNode"`
+	// MaxWaitingCopyTaskPerNode int               `json:"maxWaitingCopyTaskPerNode"`
+	// MaxHeldCopyTaskReady      int               `json:"maxHeldCopyTaskReady"`
+	// PrioPhaseThree            int               `json:"prioPhaseThree"`
+	// Additional                map[string]string `json:"additional"`
+	// MaxMemory                 int               `json:"maxMemory"`
+	// MinMemory                 int               `json:"minMemory"`
 }
 
 type vertex struct {
@@ -64,32 +84,61 @@ type task struct {
 	Cpus            int        `json:"cpus"`
 	MemoryInBytes   int        `json:"memoryInBytes"`
 	WorkDir         string     `json:"workDir"`
+	Repetition      int        `json:"repetition"`
+	InputSize       int        `json:"inputSize"`
 }
 
 const (
-	strategyKey = "cwsSchedulerStrategy"
-	nameKey     = "cwsSchedulerName"
-	podNameKey  = "cwsSchedulerPodName"
-	podPortKey  = "cwsSchedulerPort"
-	urlKey      = "cwsSchedulerUrl"
+	strategyKey     = "cwsSchedulerStrategy"
+	nameKey         = "cwsSchedulerName"
+	podNameKey      = "cwsSchedulerPodName"
+	podPortKey      = "cwsSchedulerPort"
+	urlKey          = "cwsSchedulerUrl"
+	traceEnabledKey = "cwsTraceEnabled"
+	namespaceKey    = "cwsNamespace"
 )
 
 var registeredTasks = 0
 var tasksInBatch = 0
 
-func (woc *wfOperationCtx) cwsInit(ctx context.Context) bool {
+func (woc *wfOperationCtx) cwsDefaultConfig(ctx context.Context) {
 	schedulerStrategy, ok := woc.globalParams[strategyKey]
 	if !ok {
 		schedulerStrategy = "fifo-fair"
 		woc.globalParams[strategyKey] = schedulerStrategy
 	}
+	woc.log.WithField("strategy", schedulerStrategy).Debug(ctx, "set scheduler strategy")
+
 	schedulerName, ok := woc.globalParams[nameKey]
 	if !ok {
 		schedulerName = "workflow-scheduler"
 		woc.globalParams[nameKey] = schedulerName
 	}
+	woc.log.WithField("schedulerName", schedulerName).Debug(ctx, "set scheduler name")
 
-	_, ok = woc.globalParams[urlKey]
+	traceEnabled, ok := woc.globalParams[traceEnabledKey]
+	if ok {
+		_, err := strconv.ParseBool(traceEnabled)
+		ok = err != nil
+	}
+	if !ok {
+		traceEnabled = "false"
+		woc.globalParams[traceEnabledKey] = traceEnabled
+	}
+	woc.log.WithField("traceEnabled", traceEnabled).Debug(ctx, "set trace")
+
+	namespace, ok := woc.globalParams[namespaceKey]
+	if !ok {
+		namespace = "argo"
+		woc.globalParams[namespaceKey] = namespace
+	}
+	woc.log.WithField("namespace", namespace).Debug(ctx, "set namespace")
+}
+
+func (woc *wfOperationCtx) cwsInit(ctx context.Context) bool {
+	woc.cwsDefaultConfig(ctx)
+
+	_, ok := woc.globalParams[urlKey]
 	if !ok {
 		schedulerPodName, ok := woc.globalParams[podNameKey]
 		if !ok {
@@ -131,11 +180,31 @@ func (woc *wfOperationCtx) cwsExecutionName() string {
 
 func (woc *wfOperationCtx) cwsRegisterWF(ctx context.Context) bool {
 	woc.log.Info(ctx, "cws: registering workflow (execution: "+woc.cwsExecutionName()+")")
-	body := registerWorkflowRequestBody{
-		Dns:          "",
-		TraceEnabled: true,
-		Namespace:    "argo",
-		Strategy:     woc.globalParams[strategyKey],
+
+	traceEnabled, err := strconv.ParseBool(woc.globalParams[traceEnabledKey])
+	if err != nil {
+		traceEnabled = false
+	}
+	// TODO: implement following missing fields - if possible
+	body := cwsSchedulerConfig{
+		// VolumeClaims: nil,
+		// LocalClaims: nil,
+		// LocalWorkDir:  "",
+		WorkDir: "/",
+		Dns:     "/",
+		// CopyStrategy:  "",
+		LocationAware: false,
+		TraceEnabled:  traceEnabled,
+		Namespace:     woc.globalParams[namespaceKey],
+		// CostFunction:              "",
+		Strategy: woc.globalParams[strategyKey],
+		// MaxCopyTaskPerNode:        0,
+		// MaxWaitingCopyTaskPerNode: 0,
+		// MaxHeldCopyTaskReady:      0,
+		// PrioPhaseThree:            0,
+		// Additional:                nil,
+		// MaxMemory:                 0,
+		// MinMemory:                 0,
 	}
 	jsonBytes, err := json.Marshal(body)
 	if err != nil {
@@ -255,7 +324,7 @@ func (woc *wfOperationCtx) cwsSubmitDAG(ctx context.Context) bool {
 			}
 			if len(task.Dependencies) == 0 {
 				edges = append(edges, edge{
-					Label: "", // TODO: resonable naming?
+					Label: "",
 					Uid:   len(edges),
 					From:  entrypointUid,
 					To:    taskUid,
@@ -269,7 +338,7 @@ func (woc *wfOperationCtx) cwsSubmitDAG(ctx context.Context) bool {
 					return false
 				}
 				edges = append(edges, edge{
-					Label: "", // TODO: resonable naming?
+					Label: "",
 					Uid:   len(edges),
 					From:  dependencyUid,
 					To:    taskUid,
@@ -373,16 +442,18 @@ func getTaskName(node *v1alpha1.NodeStatus) string {
 
 func (woc *wfOperationCtx) cwsRegisterTask(node *v1alpha1.NodeStatus, ctx context.Context) bool {
 	woc.log.Info(ctx, "cws: registering task")
-	// TODO: params and input task fields
+	// TODO: missing task fields - important for some scheduling algorithms - but information maybe no available in argo
 	body := task{
 		Task:            getTaskName(node),
 		Name:            node.DisplayName,
 		SchedulerParams: taskParams{},
-		Inputs:          taskInputs{}, // NOTE: only file inputs matter
+		Inputs:          taskInputs{}, // TODO: implement (or at least InputSize)
 		RunName:         util.GeneratePodName(woc.wf.Name, node.Name, node.TemplateName, node.ID, util.GetWorkflowPodNameVersion(woc.wf)),
-		Cpus:            0, // NOTE: never used by CWS scheduler
-		MemoryInBytes:   0, // NOTE: never used by CWS scheduler
-		WorkDir:         "/",
+		Cpus:            0,   // TODO: implement
+		MemoryInBytes:   0,   // TODO: implement
+		WorkDir:         "/", // TODO: implement
+		Repetition:      0,   // TODO: implement
+		InputSize:       0,   // TODO: implement
 	}
 	woc.log.WithFields(logging.Fields{
 		"template name": node.TemplateName,
