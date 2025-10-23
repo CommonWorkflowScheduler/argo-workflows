@@ -207,12 +207,14 @@ func (woc *wfOperationCtx) operate(ctx context.Context) {
 
 	woc.log.WithFields(logging.Fields{"Phase": woc.wf.Status.Phase, "ResourceVersion": woc.wf.ObjectMeta.ResourceVersion}).Info(ctx, "Processing workflow")
 
-	if !woc.cwsInit(ctx) {
-		woc.log.Info(ctx, "returning from operate() due to cws error")
-		return
+	if woc.cwsIsEnabled() {
+		if !woc.cwsInit(ctx) {
+			woc.log.Info(ctx, "returning from operate() due to cws error")
+			return
+		}
+		woc.cwsStartBatch(ctx)
+		defer woc.cwsEndBatch(ctx)
 	}
-	woc.cwsStartBatch(ctx)
-	defer woc.cwsEndBatch(ctx)
 
 	// Set the Execute workflow spec for execution
 	// ExecWF is a runtime execution spec which merged from Wf, WFT and Wfdefault
@@ -495,6 +497,10 @@ func (woc *wfOperationCtx) operate(ctx context.Context) {
 		workflowMessage = fmt.Sprintf("Stopped with strategy '%s'", woc.GetShutdownStrategy())
 	} else {
 		workflowMessage = node.Message
+	}
+
+	if woc.cwsIsEnabled() {
+		woc.cwsDeleteWF(ctx)
 	}
 
 	// If we get here, the workflow completed, all PVCs were deleted successfully, and
@@ -3024,13 +3030,10 @@ func (woc *wfOperationCtx) executeContainer(ctx context.Context, nodeName string
 		return node, err
 	}
 
-	woc.log.WithFields(logging.Fields{"nodeName": nodeName, "template": tmpl.Name}).Debug(ctx, "Executing node with container template")
-	woc.cwsRegisterTask(node, ctx)
+	if woc.cwsIsEnabled() {
+		woc.cwsRegisterTask(node, ctx)
+	}
 
-	woc.log.WithFields(logging.Fields{
-		"node":               nodeName,
-		"container template": tmpl.Name,
-	}).Debug(ctx, "Executing node")
 	_, err = woc.createWorkflowPod(ctx, nodeName, []apiv1.Container{*tmpl.Container}, tmpl, &createWorkflowPodOpts{
 		includeScriptOutput: includeScriptOutput,
 		onExitPod:           opts.onExitTemplate,

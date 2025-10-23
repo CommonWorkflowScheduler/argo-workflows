@@ -89,6 +89,7 @@ type task struct {
 }
 
 const (
+	enabledKey      = "cwsEnable"
 	strategyKey     = "cwsSchedulerStrategy"
 	nameKey         = "cwsSchedulerName"
 	podNameKey      = "cwsSchedulerPodName"
@@ -102,57 +103,104 @@ var registeredTasks = 0
 var tasksInBatch = 0
 
 func (woc *wfOperationCtx) cwsDefaultConfig(ctx context.Context) {
-	schedulerStrategy, ok := woc.globalParams[strategyKey]
-	if !ok {
+	woc.log.Info(ctx, "cws: FRIEDRICH searching params for config")
+	schedulerStrategyParam := woc.wf.Spec.Arguments.GetParameterByName(strategyKey)
+	var schedulerStrategy string
+	if schedulerStrategyParam == nil {
 		schedulerStrategy = "fifo-fair"
-		woc.globalParams[strategyKey] = schedulerStrategy
+	} else {
+		schedulerStrategy = schedulerStrategyParam.Value.String()
 	}
+	woc.globalParams[strategyKey] = schedulerStrategy
 	woc.log.WithField("strategy", schedulerStrategy).Debug(ctx, "set scheduler strategy")
 
-	schedulerName, ok := woc.globalParams[nameKey]
-	if !ok {
+	schedulerNameParam := woc.wf.Spec.Arguments.GetParameterByName(nameKey)
+	var schedulerName string
+	if schedulerNameParam == nil {
 		schedulerName = "workflow-scheduler"
-		woc.globalParams[nameKey] = schedulerName
+	} else {
+		schedulerName = schedulerNameParam.Value.String()
+		woc.log.WithField("schedulerName", schedulerName).Info(ctx, "cws: FRIEDRICH found parameter schedulerName")
 	}
+	woc.globalParams[nameKey] = schedulerName
 	woc.log.WithField("schedulerName", schedulerName).Debug(ctx, "set scheduler name")
 
-	traceEnabled, ok := woc.globalParams[traceEnabledKey]
+	traceEnabledParam := woc.wf.Spec.Arguments.GetParameterByName(traceEnabledKey)
+	var traceEnabled string
+	ok := traceEnabledParam != nil
 	if ok {
+		traceEnabled = traceEnabledParam.Value.String()
 		_, err := strconv.ParseBool(traceEnabled)
 		ok = err != nil
 	}
 	if !ok {
 		traceEnabled = "false"
-		woc.globalParams[traceEnabledKey] = traceEnabled
 	}
+	woc.globalParams[traceEnabledKey] = traceEnabled
 	woc.log.WithField("traceEnabled", traceEnabled).Debug(ctx, "set trace")
 
-	namespace, ok := woc.globalParams[namespaceKey]
+	namespaceParam := woc.wf.Spec.Arguments.GetParameterByName(namespaceKey)
+	var namespace string
 	if !ok {
 		namespace = "argo"
-		woc.globalParams[namespaceKey] = namespace
+	} else {
+		namespace = namespaceParam.Value.String()
 	}
+	woc.globalParams[namespaceKey] = namespace
 	woc.log.WithField("namespace", namespace).Debug(ctx, "set namespace")
 }
 
+func (woc *wfOperationCtx) cwsSchedulerName() string {
+	return woc.globalParams[nameKey] + "-" + woc.cwsExecutionName()
+}
+
+func (woc *wfOperationCtx) cwsIsEnabled() bool {
+	cwsEnabled, ok := woc.globalParams[enabledKey]
+	if !ok {
+		cwsEnabledParam := woc.wf.Spec.Arguments.GetParameterByName(enabledKey)
+		if cwsEnabledParam == nil {
+			cwsEnabled = "false"
+		} else {
+			cwsEnabled = cwsEnabledParam.Value.String()
+		}
+		if strings.HasPrefix(cwsEnabled, "f") || strings.HasPrefix(cwsEnabled, "n") {
+			cwsEnabled = "false"
+		} else {
+			cwsEnabled = "true"
+		}
+		woc.globalParams[enabledKey] = cwsEnabled
+	}
+	return cwsEnabled == "true"
+}
+
 func (woc *wfOperationCtx) cwsInit(ctx context.Context) bool {
-	woc.cwsDefaultConfig(ctx)
+	woc.log.Info(ctx, "cws: FRIEDRICH init")
 
 	_, ok := woc.globalParams[urlKey]
 	if !ok {
-		schedulerPodName, ok := woc.globalParams[podNameKey]
+		woc.cwsDefaultConfig(ctx)
+
+		schedulerPodNameParam := woc.wf.Spec.Arguments.GetParameterByName(podNameKey)
+		var schedulerPodName string
 		if !ok {
 			schedulerPodName = "workflow-scheduler"
+		} else {
+			schedulerPodName = schedulerPodNameParam.Value.String()
 		}
+
 		pods := woc.controller.kubeclientset.CoreV1().Pods(woc.wf.Namespace)
 		pod, err := pods.Get(context.Background(), schedulerPodName, metav1.GetOptions{})
 		if err != nil {
 			woc.log.Error(ctx, "cws: could not register workflow and submit dag")
 			return false
 		}
-		schedulerPort, ok := woc.globalParams[podPortKey]
+
+		schedulerPortParam := woc.wf.Spec.Arguments.GetParameterByName(podPortKey)
+		var schedulerPort string
 		if !ok {
 			schedulerPort = "8080"
+		} else {
+			schedulerPort = schedulerPortParam.Value.String()
 		}
 		podIp := pod.Status.PodIP
 		schedulerUrl := "http://" + podIp + ":" + schedulerPort
@@ -311,7 +359,6 @@ func (woc *wfOperationCtx) cwsSubmitDAG(ctx context.Context) bool {
 				Uid:   vertexUid,
 				Type:  "PROCESS",
 			}
-			woc.log.WithField("vertex name", task.Name).Info(ctx, "cws: found vertex")
 			vertices = append(vertices, taskVertex)
 			vertexUids[task.Name] = vertexUid
 		}
@@ -319,7 +366,7 @@ func (woc *wfOperationCtx) cwsSubmitDAG(ctx context.Context) bool {
 		for _, task := range entrypointDag.Tasks {
 			taskUid := vertexUids[task.Name]
 			if taskUid == 0 {
-				woc.log.WithField("invalid template name", task.Template).Error(ctx, "cws: Expect DAG tasks to have valid template name")
+				woc.log.WithField("invalid name", task.Name).Error(ctx, "cws: Expect DAG tasks to have valid name")
 				return false
 			}
 			if len(task.Dependencies) == 0 {
@@ -442,15 +489,67 @@ func getTaskName(node *v1alpha1.NodeStatus) string {
 
 func (woc *wfOperationCtx) cwsRegisterTask(node *v1alpha1.NodeStatus, ctx context.Context) bool {
 	woc.log.Info(ctx, "cws: registering task")
+
+	var podSpecPatchRaw string = ""
+	for _, template := range woc.wf.Spec.Templates {
+		if template.Name == node.TemplateName {
+			podSpecPatchRaw = template.PodSpecPatch
+			break
+		}
+	}
+
+	var cpus int64 = 0
+	var memBytes int64 = 0
+	var podSpecPatch map[string]any
+	if err := json.Unmarshal([]byte(podSpecPatchRaw), &podSpecPatch); err != nil {
+		woc.log.Warn(ctx, "cws: unable to parse podSpecPath")
+	} else if containers, ok := podSpecPatch["containers"].([]any); ok && len(containers) > 0 {
+		if container, ok := containers[0].(map[string]any); ok {
+			if resources, ok := container["resources"].(map[string]any); ok {
+				if limits, ok := resources["limits"].(map[string]any); ok {
+					if cpuStr, ok := limits["cpu"].(string); ok {
+						if strings.HasPrefix(cpuStr, "{{inputs.parameters.") {
+							cpuParam := node.Inputs.GetParameterByName(cpuStr[20 : len(cpuStr)-2])
+							if cpuParam != nil {
+								cpuStr = cpuParam.Value.String()
+							}
+						}
+						cpu, err := strconv.ParseInt(cpuStr, 10, 64)
+						if err != nil {
+							woc.log.WithField("cpu", cpuStr).Warn(ctx, "cws: unable to parse CPU resource limit (expected integer)")
+						} else {
+							cpus = cpu
+						}
+					}
+					if memStr, ok := limits["memory"].(string); ok {
+						if strings.HasPrefix(memStr, "{{inputs.parameters.") {
+							memParam := node.Inputs.GetParameterByName(memStr[20 : len(memStr)-2])
+							if memParam != nil {
+								memStr = memParam.Value.String()
+							}
+						}
+						mem, err := strconv.ParseInt(memStr, 10, 64)
+						if err != nil {
+							woc.log.WithField("mem", memStr).Warn(ctx, "cws: unable to parse memory resource limit (expected integer)")
+						} else {
+							memBytes = mem
+						}
+					}
+				}
+				// TODO: check if resource requests are the same
+			}
+		}
+	}
 	// TODO: missing task fields - important for some scheduling algorithms - but information maybe no available in argo
+	podName := util.GeneratePodName(woc.wf.Name, node.Name, node.TemplateName, node.ID, util.GetWorkflowPodNameVersion(woc.wf))
 	body := task{
 		Task:            getTaskName(node),
-		Name:            node.DisplayName,
+		Name:            podName,
 		SchedulerParams: taskParams{},
 		Inputs:          taskInputs{}, // TODO: implement (or at least InputSize)
-		RunName:         util.GeneratePodName(woc.wf.Name, node.Name, node.TemplateName, node.ID, util.GetWorkflowPodNameVersion(woc.wf)),
-		Cpus:            0,   // TODO: implement
-		MemoryInBytes:   0,   // TODO: implement
+		RunName:         podName,
+		Cpus:            int(cpus),
+		MemoryInBytes:   int(memBytes),
 		WorkDir:         "/", // TODO: implement
 		Repetition:      0,   // TODO: implement
 		InputSize:       0,   // TODO: implement
